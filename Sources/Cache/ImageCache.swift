@@ -969,7 +969,7 @@ open class ImageCache: @unchecked Sendable {
     ) -> String
     {
         let computedKey = key.computedKey(with: identifier)
-        return diskStorage.cacheFileName(forKey: computedKey, forcedExtension: forcedExtension)
+        return diskStorage.cacheFileName(forKey: computedKey, withExtension: forcedExtension)
     }
     
     /// Calculates the size taken by the disk storage.
@@ -1018,7 +1018,7 @@ open class ImageCache: @unchecked Sendable {
     ) -> String
     {
         let computedKey = key.computedKey(with: identifier)
-        return diskStorage.cacheFileURL(forKey: computedKey, forcedExtension: forcedExtension).path
+        return diskStorage.cacheFileURL(forKey: computedKey, withExtension: forcedExtension).path
     }
     
     /// Returns the file URL if a disk cache file is existing for the target key, identifier and forcedExtension
@@ -1039,7 +1039,7 @@ open class ImageCache: @unchecked Sendable {
         return diskStorage.isCached(
             forKey: computedKey,
             forcedExtension: forcedExtension
-        ) ? diskStorage.cacheFileURL(forKey: computedKey, forcedExtension: forcedExtension) : nil
+        ) ? diskStorage.cacheFileURL(forKey: computedKey, withExtension: forcedExtension) : nil
     }
     
     // MARK: - Concurrency

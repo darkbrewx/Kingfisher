@@ -34,6 +34,36 @@ import Foundation
 ///
 /// Refer to these composite types for further details.
 public enum DiskStorage {
+    
+    /// Represents different strategies for determining file extensions in disk cache.
+    public enum ExtensionStrategy: Sendable {
+        /// Use the configuration's default path extension.
+        case configDefault(String)
+        
+        /// Auto-detect extension from image data using magic numbers.
+        case autoDetected
+        
+        /// No extension, store as pure hash.
+        case none
+        
+        /// Create a strategy based on disk storage configuration.
+        /// - Parameter config: Disk storage configuration.
+        /// - Returns: The appropriate file extension strategy.
+        public static func fromConfig(_ config: DiskStorage.Config) -> ExtensionStrategy {
+            // Priority 1: Configuration default
+            if let configExt = config.pathExtension {
+                return .configDefault(configExt)
+            }
+            
+            // Priority 2: Auto-detection if enabled
+            if config.usesHashedFileName && config.autoExtAfterHashedFileName {
+                return .autoDetected
+            }
+            
+            // Priority 3: No extension
+            return .none
+        }
+    }
 
     /// Represents a storage backend for the ``DiskStorage``.
     ///
@@ -53,7 +83,13 @@ public enum DiskStorage {
         /// It is a value you can set and use to configure the storage as needed.
         public var config: Config {
             get { propertyQueue.sync { _config } }
-            set { propertyQueue.sync { _config = newValue } }
+            set { 
+                propertyQueue.sync { 
+                    _config = newValue
+                    // Update extension strategy when config changes
+                    extensionStrategy = ExtensionStrategy.fromConfig(newValue)
+                }
+            }
         }
 
         /// The final storage URL on disk of the disk storage ``DiskStorage/Backend``, considering the
@@ -64,7 +100,12 @@ public enum DiskStorage {
 
         // A shortcut (which contains false-positive) to improve matching performance.
         var maybeCached : Set<String>?
+        // Maps hash (without extension) to extension: [hash: extension]
+        var hashToExtension : [String: String]?
         let maybeCachedCheckingQueue = DispatchQueue(label: "com.onevcat.Kingfisher.maybeCachedCheckingQueue")
+        
+        // File extension strategy determined from configuration
+        var extensionStrategy: ExtensionStrategy
 
         // `false` if the storage initialized with an error.
         // This prevents unexpected forcibly crash when creating storage in the default cache.
@@ -91,6 +132,9 @@ public enum DiskStorage {
             config.cachePathBlock = nil
             _config = config
 
+            // Initialize extension strategy from configuration
+            extensionStrategy = ExtensionStrategy.fromConfig(config)
+
             metaChangingQueue = DispatchQueue(label: creation.cacheName)
             setupCacheChecking()
 
@@ -104,14 +148,26 @@ public enum DiskStorage {
                 do {
                     let allFiles = try self.config.fileManager.contentsOfDirectory(atPath: self.directoryURL.path)
                     let maybeCached = Set(allFiles)
+                    
+                    // Create hash -> extension mapping
+                    let hashToExtension = allFiles.reduce(into: [String: String]()) { dict, fileName in
+                        let url = URL(fileURLWithPath: fileName)
+                        let hashName = url.deletingPathExtension().lastPathComponent
+                        let ext = url.pathExtension
+                        // Store all files, even those without extension (empty string)
+                        dict[hashName] = ext
+                    }
+                    
                     self.maybeCachedCheckingQueue.async {
                         self.maybeCached = maybeCached
+                        self.hashToExtension = hashToExtension
                     }
                 } catch {
                     self.maybeCachedCheckingQueue.async {
                         // Just disable the functionality if we fail to initialize it properly. This will just revert to
                         // the behavior which is to check file existence on disk directly.
                         self.maybeCached = nil
+                        self.hashToExtension = nil
                     }
                 }
             }
@@ -168,7 +224,11 @@ public enum DiskStorage {
                 throw KingfisherError.cacheError(reason: .cannotConvertToData(object: value, error: error))
             }
 
-            let fileURL = cacheFileURL(forKey: key, forcedExtension: forcedExtension)
+            // Resolve the appropriate file extension
+            let fileExtension = resolveFileExtension(forKey: key, forcedExtension: forcedExtension, data: data)
+            
+            let fileURL = cacheFileURL(forKey: key, withExtension: fileExtension)
+            print("store filepath: \(fileURL.path)")
             do {
                 try data.write(to: fileURL, options: writeOptions)
             } catch {
@@ -210,7 +270,14 @@ public enum DiskStorage {
             }
 
             maybeCachedCheckingQueue.async {
+                print("maybeCached insert: \(fileURL.lastPathComponent)")
                 self.maybeCached?.insert(fileURL.lastPathComponent)
+                
+                // Update hash -> extension mapping
+                let hashName = fileURL.deletingPathExtension().lastPathComponent
+                let ext = fileURL.pathExtension
+                // Store even if extension is empty
+                self.hashToExtension?[hashName] = ext
             }
         }
 
@@ -248,12 +315,37 @@ public enum DiskStorage {
             }
 
             let fileManager = config.fileManager
-            let fileURL = cacheFileURL(forKey: key, forcedExtension: forcedExtension)
-            let filePath = fileURL.path
-
-            let fileMaybeCached = maybeCachedCheckingQueue.sync {
-                return maybeCached?.contains(fileURL.lastPathComponent) ?? true
+            
+            // Determine extension and file URL
+            let (fileURL, fileMaybeCached): (URL, Bool) = maybeCachedCheckingQueue.sync {
+                // If forcedExtension is provided, use it directly
+                if let forcedExt = forcedExtension {
+                    let resolvedExt = resolveFileExtension(forKey: key, forcedExtension: forcedExt)
+                    let url = cacheFileURL(forKey: key, withExtension: resolvedExt)
+                    let cached = maybeCached?.contains(url.lastPathComponent) ?? true
+                    return (url, cached)
+                }
+                
+                // No forcedExtension, check stored extensions
+                let hashName = config.usesHashedFileName ? key.kf.sha256 : key
+                
+                if let storedExt = hashToExtension?[hashName] {
+                    // Found stored extension (might be empty string)
+                    let ext = storedExt.isEmpty ? nil : storedExt
+                    let url = cacheFileURL(forKey: key, withExtension: ext)
+                    return (url, true)
+                } else {
+                    // No stored info, fall back to resolved extension
+                    let resolvedExt = resolveFileExtension(forKey: key, forcedExtension: nil)
+                    let url = cacheFileURL(forKey: key, withExtension: resolvedExt)
+                    let cached = hashToExtension != nil ? false : true
+                    return (url, cached)
+                }
             }
+            
+            let filePath = fileURL.path
+            print("value filepath: \(filePath)")
+            print("fileMaybeCached: \(fileMaybeCached)")
             guard fileMaybeCached else {
                 return nil
             }
@@ -334,12 +426,42 @@ public enum DiskStorage {
         ///   - forcedExtension: The file extension, if exists.
         /// - Throws: An error during the removal of the value.
         public func remove(forKey key: String, forcedExtension: String? = nil) throws {
-            let fileURL = cacheFileURL(forKey: key, forcedExtension: forcedExtension)
+            let fileURL: URL
+            
+            if let forcedExt = forcedExtension {
+                // Use forced extension directly
+                let resolvedExt = resolveFileExtension(forKey: key, forcedExtension: forcedExt)
+                fileURL = cacheFileURL(forKey: key, withExtension: resolvedExt)
+            } else {
+                // No forcedExtension, check stored extensions
+                let hashName = config.usesHashedFileName ? key.kf.sha256 : key
+                
+                fileURL = maybeCachedCheckingQueue.sync {
+                    if let storedExt = hashToExtension?[hashName] {
+                        // Found stored extension (might be empty string)
+                        let ext = storedExt.isEmpty ? nil : storedExt
+                        return cacheFileURL(forKey: key, withExtension: ext)
+                    } else {
+                        // No stored info, fall back to resolved extension without data
+                        let resolvedExt = resolveFileExtension(forKey: key, forcedExtension: nil)
+                        return cacheFileURL(forKey: key, withExtension: resolvedExt)
+                    }
+                }
+            }
+            
             try removeFile(at: fileURL)
         }
 
         func removeFile(at url: URL) throws {
             try config.fileManager.removeItem(at: url)
+            
+            // Update cache structures
+            maybeCachedCheckingQueue.async {
+                self.maybeCached?.remove(url.lastPathComponent)
+                
+                let hashName = url.deletingPathExtension().lastPathComponent
+                self.hashToExtension?.removeValue(forKey: hashName)
+            }
         }
 
         /// Removes all values in this storage.
@@ -353,6 +475,12 @@ public enum DiskStorage {
             if !skipCreatingDirectory {
                 try prepareDirectory()
             }
+            
+            // Clear cache structures
+            maybeCachedCheckingQueue.async {
+                self.maybeCached?.removeAll()
+                self.hashToExtension?.removeAll()
+            }
         }
         
         /// The URL of the cached file with a given computed `key`.
@@ -360,37 +488,58 @@ public enum DiskStorage {
         ///   - key: The final computed key used when caching the image. Please note that usually this is not
         /// the ``Source/cacheKey`` of an image ``Source``. It is the computed key with the processor identifier
         /// considered.
-        ///   - forcedExtension: The file extension, if exists.
-        /// - Returns: The expected file URL on the disk based on the `key` and the `forcedExtension`.
+        ///   - ext: The file extension to append to the cached file name.
+        /// - Returns: The expected file URL on the disk based on the `key` and the `extension`.
         ///
         /// This method does not guarantee that an image is already cached at the returned URL. It just provides the URL
         /// where the image should be if it exists in the disk storage, with the given key and file extension.
         ///
-        public func cacheFileURL(forKey key: String, forcedExtension: String? = nil) -> URL {
-            let fileName = cacheFileName(forKey: key, forcedExtension: forcedExtension)
+        public func cacheFileURL(forKey key: String, withExtension ext: String? = nil) -> URL {
+            let fileName = cacheFileName(forKey: key, withExtension: ext)
             return directoryURL.appendingPathComponent(fileName, isDirectory: false)
         }
         
-        func cacheFileName(forKey key: String, forcedExtension: String? = nil) -> String {
+        func cacheFileName(forKey key: String, withExtension ext: String? = nil) -> String {
             let baseName = config.usesHashedFileName ? key.kf.sha256 : key
             
-            if let ext = fileExtension(key: key, forcedExtension: forcedExtension) {
+            if let ext = ext {
                 return "\(baseName).\(ext)"
             }
             
             return baseName
         }
         
-        func fileExtension(key: String, forcedExtension: String?) -> String? {
-            if let ext = forcedExtension ?? config.pathExtension {
+        /// Resolves the appropriate file extension based on the configured strategy.
+        /// - Parameters:
+        ///   - key: The cache key for hash lookup.
+        ///   - forcedExtension: User-provided extension (highest priority).
+        ///   - data: Image data for auto-detection (optional).
+        /// - Returns: The resolved extension string, or nil for no extension.
+        func resolveFileExtension(forKey key: String, forcedExtension: String?, data: Data? = nil) -> String? {
+            // Priority 1: User-forced extension always wins
+            if let forced = forcedExtension {
+                return forced
+            }
+            
+            // Priority 2: Apply the configured strategy
+            switch extensionStrategy {
+            case .configDefault(let ext):
                 return ext
+                
+            case .autoDetected:
+                // Try to detect from data first
+                if let data {
+                    return data.kf.imageFormat.fileExtension
+                }
+                // Fallback to stored extension lookup when no data available
+                let hashName = config.usesHashedFileName ? key.kf.sha256 : key
+                return maybeCachedCheckingQueue.sync {
+                    return hashToExtension?[hashName]
+                }
+                
+            case .none:
+                return nil
             }
-        
-            if config.usesHashedFileName && config.autoExtAfterHashedFileName {
-                return key.kf.ext
-            }
-        
-            return nil
         }
 
         func allFileURLs(for propertyKeys: [URLResourceKey]) throws -> [URL] {

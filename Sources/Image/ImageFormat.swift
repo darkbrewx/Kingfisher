@@ -37,6 +37,16 @@ public enum ImageFormat: Sendable {
     /// GIF image format.
     case GIF
     
+    /// Returns the file extension for this image format.
+    public var fileExtension: String? {
+        switch self {
+        case .PNG: return "png"
+        case .JPEG: return "jpg"
+        case .GIF: return "gif"
+        case .unknown: return nil
+        }
+    }
+
     struct HeaderData {
         static let PNG: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
         static let JPEG_SOI: [UInt8] = [0xFF, 0xD8]

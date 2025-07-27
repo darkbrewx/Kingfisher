@@ -33,7 +33,9 @@ struct LoadingFailureDemo: View {
     var url: URL {
         URL(string: "https://example.com")!
     }
-    
+
+    var url2 = URL(string: "https://t.furaffinity.net/57373197@300-1720981878.jpg")!
+
     var warningImage: UIImage {
         let config = UIImage.SymbolConfiguration(pointSize: 50)
         return UIImage(
@@ -41,10 +43,14 @@ struct LoadingFailureDemo: View {
             withConfiguration: config
         )!
     }
-    
+
+    init() {
+        ImageCache.default.diskStorage.config.autoExtAfterHashedFileName = true
+    }
+
     var body: some View {
         VStack {
-            KFImage(url)
+            KFImage(url2)
                 .onFailureImage(warningImage) // onFailureImage should not work
                 .onFailureView {
                     ZStack {
@@ -60,13 +66,13 @@ struct LoadingFailureDemo: View {
             Text("onFailureView")
             Spacer().frame(height: 20)
             
-            KFImage(url)
-                .onFailureImage(warningImage)
-                .frame(width: 200, height: 200)
-                .background(
-                    RoundedRectangle(cornerRadius: 20)
-                        .fill(Color.red.opacity(0.5))
-                )
+//            KFImage(url)
+//                .onFailureImage(warningImage)
+//                .frame(width: 200, height: 200)
+//                .background(
+//                    RoundedRectangle(cornerRadius: 20)
+//                        .fill(Color.red.opacity(0.5))
+//                )
             Text("onFailureImage")
         }
     }
