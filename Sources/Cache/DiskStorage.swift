@@ -355,6 +355,7 @@ public enum DiskStorage {
 
             let meta: FileMeta
             do {
+                print("try to get meta")
                 let resourceKeys: Set<URLResourceKey> = [.contentModificationDateKey, .creationDateKey]
                 meta = try FileMeta(fileURL: fileURL, resourceKeys: resourceKeys)
             } catch {
@@ -533,9 +534,7 @@ public enum DiskStorage {
                 }
                 // Fallback to stored extension lookup when no data available
                 let hashName = config.usesHashedFileName ? key.kf.sha256 : key
-                return maybeCachedCheckingQueue.sync {
-                    return hashToExtension?[hashName]
-                }
+                return self.hashToExtension?[hashName]
                 
             case .none:
                 return nil

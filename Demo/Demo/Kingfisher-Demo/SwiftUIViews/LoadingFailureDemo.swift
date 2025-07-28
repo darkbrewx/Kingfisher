@@ -45,7 +45,7 @@ struct LoadingFailureDemo: View {
     }
 
     init() {
-        ImageCache.default.diskStorage.config.autoExtAfterHashedFileName = true
+        ImageCache.default.diskStorage.config.autoExtAfterHashedFileName = false
     }
 
     var body: some View {
